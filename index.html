@@ -9,6 +9,17 @@
     <style>
         body { font-family: 'Inter', sans-serif; }
         .card-container { transition: all 0.3s ease; }
+        /* Custom file input styling for the fallback button */
+        #manual-upload::file-selector-button {
+            background-color: #4f46e5;
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 0.375rem;
+            border: none;
+            cursor: pointer;
+            font-size: 0.75rem;
+            margin-right: 0.5rem;
+        }
     </style>
     <script>
         // Apply theme immediately to prevent flash
@@ -47,35 +58,77 @@
 
         async function loadDeadlines() {
             const fileName = 'deadlines.ics';
+            let fetchUrl = fileName;
+            
             try {
+                // Construct path for environments that support relative fetch (like GitHub Pages)
+                // In Canvas preview, relative fetch often fails with TypeError
+                if (window.location.protocol !== 'blob:') {
+                    const path = window.location.pathname;
+                    const directory = path.substring(0, path.lastIndexOf('/') + 1);
+                    fetchUrl = `${window.location.origin}${directory}${fileName}`;
+                }
+
                 const t = new Date().getTime();
-                const response = await fetch(`${fileName}?t=${t}`);
+                const response = await fetch(`${fetchUrl}?t=${t}`);
                 
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: Could not find ${fileName} at ${window.location.origin}${window.location.pathname}${fileName}`);
+                    throw new Error(`HTTP ${response.status}: Failed to reach ${fetchUrl}`);
                 }
                 
                 const content = await response.text();
-                const parsed = parseICS(content);
+                processData(content);
                 statusMsg.textContent = `Last sync: ${new Date().toLocaleTimeString()}`;
-                renderMilestones(parsed);
             } catch (error) {
-                console.error(error);
-                statusMsg.textContent = 'Error: deadlines.ics not found.';
-                milestonesContainer.innerHTML = `
-                    <div class="col-span-full text-center py-12">
-                        <p class="text-red-400 italic">Official schedule file (deadlines.ics) missing from server.</p>
-                        <p class="text-xs text-slate-500 mt-4 px-4 py-2 bg-slate-200 dark:bg-slate-800 rounded inline-block">
-                            Looking for: <code class="text-indigo-400">${window.location.origin}${window.location.pathname}${fileName}</code>
-                        </p>
-                        <ul class="text-xs text-slate-500 mt-4 list-disc list-inside text-left max-w-md mx-auto space-y-1">
-                            <li>Ensure your file is named exactly <b>deadlines.ics</b> (all lowercase).</li>
-                            <li>Ensure it is in the root of your <b>3320</b> folder on GitHub.</li>
-                            <li>Try visiting the URL above directly in your browser to see if the file downloads.</li>
-                        </ul>
-                    </div>
-                `;
+                console.error('Fetch error:', error);
+                
+                // Detailed error for diagnostics
+                let errorMessage = error.message;
+                if (error instanceof TypeError) {
+                    errorMessage = `Network Error/CORS: Could not fetch ${fetchUrl}. This is expected in the preview environment if the file isn't hosted yet.`;
+                }
+
+                statusMsg.textContent = 'Connection Error: deadlines.ics not found.';
+                showErrorState(errorMessage, fetchUrl);
             }
+        }
+
+        function processData(content) {
+            const parsed = parseICS(content);
+            renderMilestones(parsed);
+        }
+
+        function showErrorState(errorDetails, attemptedUrl) {
+            milestonesContainer.innerHTML = `
+                <div class="col-span-full text-center py-12">
+                    <p class="text-red-400 italic font-bold">Official schedule file (deadlines.ics) not found on server.</p>
+                    <div class="mt-4 p-4 bg-slate-200 dark:bg-slate-800 rounded-lg inline-block text-left max-w-2xl border border-red-500/20">
+                        <p class="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">Troubleshooting Diagnostics:</p>
+                        <p class="text-[10px] text-indigo-400 font-mono break-all">${errorDetails}</p>
+                        <ul class="text-xs text-slate-500 mt-4 list-disc list-inside space-y-2">
+                            <li>Verify the file is named <b class="text-slate-300">deadlines.ics</b> (lowercase) in your GitHub repo.</li>
+                            <li>Ensure it is in the same folder as <b class="text-slate-300">index.html</b>.</li>
+                            <li>GitHub Pages may take a few minutes to update after an upload.</li>
+                        </ul>
+                        <div class="mt-6 pt-4 border-t border-slate-700">
+                            <p class="text-xs text-slate-400 mb-2"><b>Preview Mode:</b> Since the file is missing on the server, you can test by uploading your .ics file here:</p>
+                            <input type="file" id="manual-upload" accept=".ics" class="text-[10px]">
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Listen for manual fallback upload
+            document.getElementById('manual-upload')?.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    processData(event.target.result);
+                    statusMsg.textContent = "Viewing local file (for diagnostic purposes)";
+                };
+                reader.readAsText(file);
+            });
         }
 
         function parseICS(data) {
@@ -93,6 +146,7 @@
                 // Unescape basic ICS characters
                 summary = summary.replace(/\\,/g, ',').replace(/\\;/g, ';').replace(/\\\\/g, '\\');
 
+                // Regex for DTSTART: handles dates and date-times
                 const dtStartMatch = eventContent.match(/DTSTART(?:;VALUE=DATE)?:(\d{8}(?:T\d{6}Z?)?)/);
                 
                 if (dtStartMatch) {
@@ -117,7 +171,6 @@
             today.setHours(0, 0, 0, 0);
 
             const getDaysRemaining = (dateString) => {
-                // Parse date string to ensure it's treated as local midnight
                 const [year, month, day] = dateString.split('-').map(Number);
                 const targetDate = new Date(year, month - 1, day);
                 const timeDiff = targetDate.getTime() - today.getTime();
@@ -130,7 +183,7 @@
                 .slice(0, 9);
 
             if (upcoming.length === 0) {
-                milestonesContainer.innerHTML = `<p class="col-span-full text-center text-slate-500 py-12">All current projects are complete.</p>`;
+                milestonesContainer.innerHTML = `<p class="col-span-full text-center text-slate-500 py-12">No upcoming events found. All projects appear complete.</p>`;
                 return;
             }
 
@@ -152,7 +205,6 @@
             let layoutClasses, sizeClasses;
             let numberText = (days === 0) ? '!' : days;
             
-            // Format date for display
             const [year, month, day] = milestone.date.split('-').map(Number);
             const dateObj = new Date(year, month - 1, day);
             const formattedDate = dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });

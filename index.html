@@ -9,7 +9,6 @@
     <style>
         body { font-family: 'Inter', sans-serif; }
         .card-container { transition: all 0.3s ease; }
-        /* Custom file input styling for the fallback button */
         #manual-upload::file-selector-button {
             background-color: #4f46e5;
             color: white;
@@ -22,7 +21,6 @@
         }
     </style>
     <script>
-        // Apply theme immediately to prevent flash
         if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
             document.documentElement.classList.add('dark')
         } else {
@@ -56,21 +54,26 @@
         const milestonesContainer = document.getElementById('milestones-container');
         const statusMsg = document.getElementById('status-msg');
 
+        // --- CONFIGURATION ---
+        // I have set this to your direct GitHub path to fix the refresh error.
+        const FORCE_ICS_URL = "https://paulrus.github.io/3320/deadlines.ics"; 
+
         async function loadDeadlines() {
             const fileName = 'deadlines.ics';
-            let fetchUrl = fileName;
+            let fetchUrl = FORCE_ICS_URL || fileName;
             
             try {
-                // Construct path for environments that support relative fetch (like GitHub Pages)
-                // In Canvas preview, relative fetch often fails with TypeError
-                if (window.location.protocol !== 'blob:') {
+                // If not forced and not a blob, try local relative path
+                if (!FORCE_ICS_URL && window.location.protocol !== 'blob:') {
                     const path = window.location.pathname;
                     const directory = path.substring(0, path.lastIndexOf('/') + 1);
                     fetchUrl = `${window.location.origin}${directory}${fileName}`;
                 }
 
-                const t = new Date().getTime();
-                const response = await fetch(`${fetchUrl}?t=${t}`);
+                const t = new Date().getTime(); 
+                const response = await fetch(`${fetchUrl}?t=${t}`, {
+                    cache: 'no-store'
+                });
                 
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: Failed to reach ${fetchUrl}`);
@@ -82,10 +85,9 @@
             } catch (error) {
                 console.error('Fetch error:', error);
                 
-                // Detailed error for diagnostics
                 let errorMessage = error.message;
                 if (error instanceof TypeError) {
-                    errorMessage = `Network Error/CORS: Could not fetch ${fetchUrl}. This is expected in the preview environment if the file isn't hosted yet.`;
+                    errorMessage = `Network Error: Could not connect to ${fetchUrl}. This is often caused by browser security settings or a missing file on the server.`;
                 }
 
                 statusMsg.textContent = 'Connection Error: deadlines.ics not found.';
@@ -101,38 +103,37 @@
         function showErrorState(errorDetails, attemptedUrl) {
             milestonesContainer.innerHTML = `
                 <div class="col-span-full text-center py-12">
-                    <p class="text-red-400 italic font-bold">Official schedule file (deadlines.ics) not found on server.</p>
+                    <p class="text-red-400 italic font-bold text-xl">Deadlines File Not Found</p>
                     <div class="mt-4 p-4 bg-slate-200 dark:bg-slate-800 rounded-lg inline-block text-left max-w-2xl border border-red-500/20">
                         <p class="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">Troubleshooting Diagnostics:</p>
                         <p class="text-[10px] text-indigo-400 font-mono break-all">${errorDetails}</p>
                         <ul class="text-xs text-slate-500 mt-4 list-disc list-inside space-y-2">
-                            <li>Verify the file is named <b class="text-slate-300">deadlines.ics</b> (lowercase) in your GitHub repo.</li>
-                            <li>Ensure it is in the same folder as <b class="text-slate-300">index.html</b>.</li>
-                            <li>GitHub Pages may take a few minutes to update after an upload.</li>
+                            <li>Is <b>deadlines.ics</b> uploaded to the <b>3320</b> folder on GitHub?</li>
+                            <li>Does the file name match exactly (no caps)?</li>
+                            <li>If you just uploaded it, wait 60 seconds for GitHub to publish the update.</li>
                         </ul>
                         <div class="mt-6 pt-4 border-t border-slate-700">
-                            <p class="text-xs text-slate-400 mb-2"><b>Preview Mode:</b> Since the file is missing on the server, you can test by uploading your .ics file here:</p>
+                            <p class="text-xs text-slate-400 mb-2 font-bold">Quick Test:</p>
+                            <p class="text-[10px] text-slate-500 mb-2">Upload your file here to check if the code works with your data.</p>
                             <input type="file" id="manual-upload" accept=".ics" class="text-[10px]">
                         </div>
                     </div>
                 </div>
             `;
 
-            // Listen for manual fallback upload
             document.getElementById('manual-upload')?.addEventListener('change', (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
                 const reader = new FileReader();
                 reader.onload = (event) => {
                     processData(event.target.result);
-                    statusMsg.textContent = "Viewing local file (for diagnostic purposes)";
+                    statusMsg.textContent = "Viewing local file (path on server still disconnected)";
                 };
                 reader.readAsText(file);
             });
         }
 
         function parseICS(data) {
-            // Unfold multi-line ICS fields (standard ICS behavior)
             const unfoldedData = data.replace(/\r?\n[ \t]/g, '');
             const events = [];
             const veventPattern = /BEGIN:VEVENT([\s\S]*?)END:VEVENT/g;
@@ -143,10 +144,8 @@
                 const summaryMatch = eventContent.match(/SUMMARY:(.*)/);
                 let summary = summaryMatch ? summaryMatch[1].trim() : "Untitled Event";
                 
-                // Unescape basic ICS characters
                 summary = summary.replace(/\\,/g, ',').replace(/\\;/g, ';').replace(/\\\\/g, '\\');
 
-                // Regex for DTSTART: handles dates and date-times
                 const dtStartMatch = eventContent.match(/DTSTART(?:;VALUE=DATE)?:(\d{8}(?:T\d{6}Z?)?)/);
                 
                 if (dtStartMatch) {
@@ -183,7 +182,7 @@
                 .slice(0, 9);
 
             if (upcoming.length === 0) {
-                milestonesContainer.innerHTML = `<p class="col-span-full text-center text-slate-500 py-12">No upcoming events found. All projects appear complete.</p>`;
+                milestonesContainer.innerHTML = `<p class="col-span-full text-center text-slate-500 py-12 text-xl font-bold">Great work! All projects are complete.</p>`;
                 return;
             }
 

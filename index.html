@@ -11,6 +11,7 @@
         .card-container { transition: all 0.3s ease; }
     </style>
     <script>
+        // Apply theme immediately to prevent flash
         if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
             document.documentElement.classList.add('dark')
         } else {
@@ -26,7 +27,7 @@
             <p class="text-slate-500 dark:text-slate-400 mt-2 text-base sm:text-lg">Upcoming Project Deadlines</p>
             
             <div class="mt-4">
-                <p id="status-msg" class="text-xs italic text-slate-400">Loading schedule...</p>
+                <p id="status-msg" class="text-xs italic text-slate-400">Fetching latest schedule...</p>
             </div>
 
             <button id="theme-toggle" type="button" class="absolute top-0 right-0 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 focus:outline-none focus:ring-4 focus:ring-slate-200 dark:focus:ring-slate-700 rounded-lg text-sm p-2.5">
@@ -36,7 +37,7 @@
         </header>
 
         <main id="milestones-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 md:gap-6">
-            <!-- Data will load automatically -->
+            <!-- Content populated by loadDeadlines() -->
         </main>
     </div>
 
@@ -44,40 +45,54 @@
         const milestonesContainer = document.getElementById('milestones-container');
         const statusMsg = document.getElementById('status-msg');
 
-        // --- AUTOMATED FETCH ---
         async function loadDeadlines() {
+            const fileName = 'deadlines.ics';
             try {
-                // Added a cache-busting timestamp to the URL
-                const cacheBuster = new Date().getTime();
-                const response = await fetch(`deadlines.ics?t=${cacheBuster}`);
+                const t = new Date().getTime();
+                const response = await fetch(`${fileName}?t=${t}`);
                 
-                if (!response.ok) throw new Error('Could not find deadlines.ics file.');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: Could not find ${fileName} at ${window.location.origin}${window.location.pathname}${fileName}`);
+                }
                 
                 const content = await response.text();
-                const parsedMilestones = parseICS(content);
-                statusMsg.textContent = `Schedule updated: ${new Date().toLocaleTimeString()}`;
-                renderMilestones(parsedMilestones);
+                const parsed = parseICS(content);
+                statusMsg.textContent = `Last sync: ${new Date().toLocaleTimeString()}`;
+                renderMilestones(parsed);
             } catch (error) {
                 console.error(error);
-                statusMsg.textContent = 'Error: deadlines.ics not found in repository.';
+                statusMsg.textContent = 'Error: deadlines.ics not found.';
                 milestonesContainer.innerHTML = `
                     <div class="col-span-full text-center py-12">
                         <p class="text-red-400 italic">Official schedule file (deadlines.ics) missing from server.</p>
+                        <p class="text-xs text-slate-500 mt-4 px-4 py-2 bg-slate-200 dark:bg-slate-800 rounded inline-block">
+                            Looking for: <code class="text-indigo-400">${window.location.origin}${window.location.pathname}${fileName}</code>
+                        </p>
+                        <ul class="text-xs text-slate-500 mt-4 list-disc list-inside text-left max-w-md mx-auto space-y-1">
+                            <li>Ensure your file is named exactly <b>deadlines.ics</b> (all lowercase).</li>
+                            <li>Ensure it is in the root of your <b>3320</b> folder on GitHub.</li>
+                            <li>Try visiting the URL above directly in your browser to see if the file downloads.</li>
+                        </ul>
                     </div>
                 `;
             }
         }
 
-        // --- ICS PARSING LOGIC ---
         function parseICS(data) {
+            // Unfold multi-line ICS fields (standard ICS behavior)
+            const unfoldedData = data.replace(/\r?\n[ \t]/g, '');
             const events = [];
             const veventPattern = /BEGIN:VEVENT([\s\S]*?)END:VEVENT/g;
             let match;
 
-            while ((match = veventPattern.exec(data)) !== null) {
+            while ((match = veventPattern.exec(unfoldedData)) !== null) {
                 const eventContent = match[1];
                 const summaryMatch = eventContent.match(/SUMMARY:(.*)/);
-                const summary = summaryMatch ? summaryMatch[1].trim() : "Untitled Event";
+                let summary = summaryMatch ? summaryMatch[1].trim() : "Untitled Event";
+                
+                // Unescape basic ICS characters
+                summary = summary.replace(/\\,/g, ',').replace(/\\;/g, ';').replace(/\\\\/g, '\\');
+
                 const dtStartMatch = eventContent.match(/DTSTART(?:;VALUE=DATE)?:(\d{8}(?:T\d{6}Z?)?)/);
                 
                 if (dtStartMatch) {
@@ -102,18 +117,20 @@
             today.setHours(0, 0, 0, 0);
 
             const getDaysRemaining = (dateString) => {
-                const targetDate = new Date(dateString + 'T00:00:00');
+                // Parse date string to ensure it's treated as local midnight
+                const [year, month, day] = dateString.split('-').map(Number);
+                const targetDate = new Date(year, month - 1, day);
                 const timeDiff = targetDate.getTime() - today.getTime();
                 return Math.ceil(timeDiff / (1000 * 3600 * 24));
             };
 
             const upcoming = milestones
                 .filter(m => getDaysRemaining(m.date) >= 0)
-                .sort((a, b) => new Date(a.date) - new Date(b.date))
+                .sort((a, b) => new Date(a.date.replace(/-/g, '/')) - new Date(b.date.replace(/-/g, '/')))
                 .slice(0, 9);
 
             if (upcoming.length === 0) {
-                milestonesContainer.innerHTML = `<p class="col-span-full text-center text-slate-500">All projects are currently complete.</p>`;
+                milestonesContainer.innerHTML = `<p class="col-span-full text-center text-slate-500 py-12">All current projects are complete.</p>`;
                 return;
             }
 
@@ -134,7 +151,12 @@
             const colorInfo = getColorInfo(days);
             let layoutClasses, sizeClasses;
             let numberText = (days === 0) ? '!' : days;
-            const formattedDate = new Date(milestone.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+            
+            // Format date for display
+            const [year, month, day] = milestone.date.split('-').map(Number);
+            const dateObj = new Date(year, month - 1, day);
+            const formattedDate = dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+            
             const isFinal = milestone.milestoneName.toLowerCase().includes('final');
 
             if (index === 0) {
@@ -161,10 +183,8 @@
             `;
         }
 
-        // Initialize on load
         window.onload = loadDeadlines;
 
-        // Theme Toggle Logic
         const themeToggleBtn = document.getElementById('theme-toggle');
         const themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
         const themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
